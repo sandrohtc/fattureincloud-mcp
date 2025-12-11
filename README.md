@@ -2,6 +2,8 @@
 
 [🇮🇹 Italiano](#italiano) | [🇬🇧 English](#english)
 
+<!-- mcp-name: io.github.aringad/fattureincloud-mcp -->
+
 ---
 
 ## Italiano
