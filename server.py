@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Fatture in Cloud MCP Server - v1.2
+"""Fatture in Cloud MCP Server - v1.3
 
 MCP Server per integrare Fatture in Cloud con Claude AI.
 Permette di gestire fatture elettroniche italiane tramite conversazione.
+
+Changelog v1.3:
+- FIX: create_invoice ora include ei_code (codice univoco SDI) dall'anagrafica cliente
+- FIX: duplicate_invoice ora verifica e aggiorna ei_code dal cliente in anagrafica
+- NEW: tool check_numeration per verificare continuità numerica fatture
 
 Author: Mediaform s.c.r.l. (https://media-form.it)
 License: MIT
@@ -11,6 +16,7 @@ License: MIT
 
 import json
 import os
+import traceback
 from datetime import datetime, timedelta
 
 import fattureincloud_python_sdk as fic
@@ -58,6 +64,62 @@ def get_client_by_id(client_id):
         return response.data.to_dict()
     except:
         return None
+
+
+def get_ei_code_for_client(client_id):
+    """Recupera il codice univoco SDI dall'anagrafica cliente.
+    
+    Logica:
+    - Se il cliente ha ei_code valorizzato → lo usa
+    - Se ha PEC ma non ei_code → usa '0000000' (transito via PEC)
+    - Fallback → '0000000'
+    """
+    try:
+        client = get_client_by_id(client_id)
+        if client:
+            ei_code = (client.get('ei_code') or '').strip()
+            if ei_code:
+                return ei_code
+            # Se ha PEC, il codice univoco può essere 0000000
+            pec = (client.get('certified_email') or '').strip()
+            if pec:
+                return '0000000'
+        return '0000000'
+    except:
+        return '0000000'
+
+
+def build_entity_from_client(client_id, client_data=None):
+    """Costruisce l'oggetto entity completo per la fattura, incluso ei_code.
+    
+    Centralizza la logica di costruzione entity per create e duplicate.
+    """
+    if not client_data:
+        client_data = get_client_by_id(client_id)
+    if not client_data:
+        return None
+
+    ei_code = get_ei_code_for_client(client_id)
+
+    entity = {
+        "id": client_id,
+        "name": client_data.get("name", ""),
+        "vat_number": client_data.get("vat_number", ""),
+        "tax_code": client_data.get("tax_code", ""),
+        "address_street": client_data.get("address_street", ""),
+        "address_city": client_data.get("address_city", ""),
+        "address_postal_code": client_data.get("address_postal_code", ""),
+        "address_province": client_data.get("address_province", ""),
+        "country": client_data.get("country", "Italia"),
+        "ei_code": ei_code,
+    }
+
+    # Includi PEC se presente
+    pec = (client_data.get("certified_email") or "").strip()
+    if pec:
+        entity["certified_email"] = pec
+
+    return entity
 
 
 @app.list_tools()
@@ -222,7 +284,18 @@ async def list_tools():
                     "year": {"type": "integer", "description": "Anno (default: corrente)"}
                 }
             }
-        )
+        ),
+        Tool(
+            name="check_numeration",
+            description="Verifica continuità numerica delle fatture emesse per un dato anno. Segnala buchi nella numerazione.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "year": {"type": "integer", "description": "Anno da verificare (es. 2025)"}
+                },
+                "required": ["year"]
+            }
+        ),
     ]
 
 
@@ -355,12 +428,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payment_days = arguments.get("payment_days", 30)
             visible_subject = arguments.get("visible_subject", "")
             
+            # v1.3: Costruisce entity completa con ei_code
             client_data = get_client_by_id(client_id)
             if not client_data:
                 return [TextContent(type="text", text=json.dumps({
                     "success": False,
                     "error": f"Cliente con ID {client_id} non trovato"
                 }, indent=2, ensure_ascii=False))]
+            
+            entity = build_entity_from_client(client_id, client_data)
             
             items_list = []
             for item in items_data:
@@ -382,17 +458,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "type": "invoice",
                     "e_invoice": True,
                     "ei_data": {"payment_method": "MP05"},
-                    "entity": {
-                        "id": client_id,
-                        "name": client_data.get("name", ""),
-                        "vat_number": client_data.get("vat_number", ""),
-                        "tax_code": client_data.get("tax_code", ""),
-                        "address_street": client_data.get("address_street", ""),
-                        "address_city": client_data.get("address_city", ""),
-                        "address_postal_code": client_data.get("address_postal_code", ""),
-                        "address_province": client_data.get("address_province", ""),
-                        "country": client_data.get("country", "Italia")
-                    },
+                    "entity": entity,
                     "date": date_str,
                     "visible_subject": visible_subject,
                     "items_list": items_list,
@@ -417,9 +483,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "number": d.get("number"),
                 "date": str(d.get("date", "")),
                 "client": client_data.get("name"),
+                "ei_code": entity.get("ei_code", "N/A"),
                 "total": round(total_gross, 2),
                 "status": "bozza",
-                "message": f"Fattura #{d.get('number')} creata come bozza. Usa send_to_sdi per inviarla."
+                "message": f"Fattura #{d.get('number')} creata come bozza. Codice SDI: {entity.get('ei_code', 'N/A')}. Usa send_to_sdi per inviarla."
             }
             return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
         
@@ -436,8 +503,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             orig = response.data.to_dict()
             
+            # v1.3: Costruisce entity completa con ei_code aggiornato dall'anagrafica
             client_id = orig.get("entity", {}).get("id")
-            client_data = get_client_by_id(client_id) if client_id else orig.get("entity", {})
+            client_data = get_client_by_id(client_id) if client_id else None
+            
+            if client_id and client_data:
+                entity = build_entity_from_client(client_id, client_data)
+            else:
+                # Fallback: usa entity originale
+                entity = orig.get("entity", {})
             
             items_list = []
             for i in orig.get("items_list", []):
@@ -460,7 +534,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             
             invoice_date = datetime.strptime(new_date_str, "%Y-%m-%d")
             
-            # Usa payment_days_override se fornito, altrimenti eredita dall'originale
             if payment_days_override is not None:
                 payment_days = payment_days_override
             else:
@@ -468,7 +541,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 payment_days = orig_payments[0].get("payment_terms", {}).get("days", 30) if orig_payments else 30
             
             due_date = invoice_date + timedelta(days=payment_days)
-            
             total_gross = sum(i["qty"] * i["net_price"] * (1 + i["vat"]["value"]/100) for i in items_list)
             
             body = {
@@ -476,17 +548,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "type": "invoice",
                     "e_invoice": True,
                     "ei_data": {"payment_method": "MP05"},
-                    "entity": {
-                        "id": client_id,
-                        "name": client_data.get("name", ""),
-                        "vat_number": client_data.get("vat_number", ""),
-                        "tax_code": client_data.get("tax_code", ""),
-                        "address_street": client_data.get("address_street", ""),
-                        "address_city": client_data.get("address_city", ""),
-                        "address_postal_code": client_data.get("address_postal_code", ""),
-                        "address_province": client_data.get("address_province", ""),
-                        "country": client_data.get("country", "Italia")
-                    },
+                    "entity": entity,
                     "date": new_date_str,
                     "visible_subject": visible_subject,
                     "items_list": items_list,
@@ -511,18 +573,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "number": d.get("number"),
                 "date": str(d.get("date", "")),
                 "due_date": due_date.strftime("%Y-%m-%d"),
-                "client": client_data.get("name"),
+                "client": (client_data or {}).get("name", entity.get("name", "")),
+                "ei_code": entity.get("ei_code", "N/A"),
                 "total": round(total_gross, 2),
                 "source_invoice": orig.get("number"),
                 "status": "bozza",
-                "message": f"Fattura #{d.get('number')} creata come bozza (duplicata da #{orig.get('number')}). Scadenza: {due_date.strftime('%d/%m/%Y')}. Usa send_to_sdi per inviarla."
+                "message": f"Fattura #{d.get('number')} creata come bozza (duplicata da #{orig.get('number')}). Codice SDI: {entity.get('ei_code', 'N/A')}. Scadenza: {due_date.strftime('%d/%m/%Y')}. Usa send_to_sdi per inviarla."
             }
             return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
         
         elif name == "delete_invoice":
             doc_id = arguments["document_id"]
             
-            # Prima verifica che la fattura esista e sia una bozza
             check = issued_api.get_issued_document(
                 company_id=COMPANY_ID,
                 document_id=doc_id,
@@ -531,14 +593,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             check_data = check.data.to_dict()
             current_status = check_data.get("ei_status")
             
-            # Permetti eliminazione solo se non inviata
             if current_status and current_status not in ["null", "not_sent", None]:
                 return [TextContent(type="text", text=json.dumps({
                     "success": False,
                     "error": f"Impossibile eliminare: fattura già inviata allo SDI. Stato attuale: {current_status}"
                 }, indent=2, ensure_ascii=False))]
             
-            # Elimina la fattura
             issued_api.delete_issued_document(
                 company_id=COMPANY_ID,
                 document_id=doc_id
@@ -724,7 +784,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             
             q = f"date >= '{year}-01-01' and date <= '{year}-12-31'"
             
-            # Fatture emesse
             emesse_resp = issued_api.list_issued_documents(
                 company_id=COMPANY_ID,
                 type="invoice",
@@ -754,7 +813,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                             "due_date": str(p.get('due_date', ''))
                         })
             
-            # Fatture ricevute (costi)
             ricevute_resp = received_api.list_received_documents(
                 company_id=COMPANY_ID,
                 type="expense",
@@ -768,7 +826,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 d = doc.to_dict()
                 totale_costi += d.get('amount_gross') or d.get('amount_net') or 0
             
-            # Ordina scadenze per data
             fatture_non_pagate.sort(key=lambda x: x.get('due_date', ''))
             
             result = {
@@ -781,12 +838,85 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "prossime_scadenze": fatture_non_pagate[:10]
             }
             return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+        
+        elif name == "check_numeration":
+            year = arguments.get("year", datetime.now().year)
+            
+            q = f"date >= '{year}-01-01' and date <= '{year}-12-31'"
+            
+            # Prima pagina
+            response = issued_api.list_issued_documents(
+                company_id=COMPANY_ID,
+                type="invoice",
+                q=q,
+                per_page=100
+            )
+            docs = [d.to_dict() for d in (response.data or [])]
+            
+            # Paginazione: recupera tutte le fatture dell'anno
+            total_pages = getattr(response, 'last_page', 1) or 1
+            if total_pages > 1:
+                for page in range(2, total_pages + 1):
+                    page_resp = issued_api.list_issued_documents(
+                        company_id=COMPANY_ID,
+                        type="invoice",
+                        q=q,
+                        per_page=100,
+                        page=page
+                    )
+                    docs.extend([d.to_dict() for d in (page_resp.data or [])])
+            
+            if not docs:
+                return [TextContent(type="text", text=json.dumps({
+                    "year": year,
+                    "status": "Nessuna fattura trovata per questo anno"
+                }, indent=2, ensure_ascii=False))]
+            
+            # Estrai numeri, escludi None/0, e ordina
+            numbers = sorted(set(
+                d.get("number") for d in docs
+                if d.get("number") is not None and d.get("number") > 0
+            ))
+            
+            gaps = []
+            if numbers:
+                # Verifica partenza da 1
+                if numbers[0] != 1:
+                    gaps.append({
+                        "type": "start",
+                        "expected": 1,
+                        "actual": numbers[0],
+                        "missing": list(range(1, numbers[0])),
+                        "note": f"La numerazione parte da {numbers[0]} invece che da 1"
+                    })
+                
+                # Cerca buchi nella sequenza
+                for i in range(len(numbers) - 1):
+                    if numbers[i + 1] - numbers[i] > 1:
+                        missing = list(range(numbers[i] + 1, numbers[i + 1]))
+                        gaps.append({
+                            "type": "gap",
+                            "after": numbers[i],
+                            "before": numbers[i + 1],
+                            "missing": missing,
+                            "note": f"Mancano i numeri {missing} tra fattura {numbers[i]} e {numbers[i+1]}"
+                        })
+            
+            result = {
+                "year": year,
+                "total_invoices": len(numbers),
+                "first_number": numbers[0] if numbers else None,
+                "last_number": numbers[-1] if numbers else None,
+                "continuous": len(gaps) == 0,
+                "status": "✓ Numerazione continua" if len(gaps) == 0 else f"⚠ Trovati {len(gaps)} problemi",
+                "gaps": gaps if gaps else []
+            }
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
             
         else:
             return [TextContent(type="text", text=f"Tool {name} non trovato")]
             
     except Exception as e:
-        import traceback
         return [TextContent(type="text", text=f"Errore: {str(e)}\n{traceback.format_exc()}")]
 
 

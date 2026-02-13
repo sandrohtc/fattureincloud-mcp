@@ -12,7 +12,7 @@ Server MCP (Model Context Protocol) per integrare **Fatture in Cloud** con Claud
 
 Permette di gestire fatture elettroniche italiane tramite conversazione naturale.
 
-### ✨ Funzionalità
+### ✨ Funzionalità (13 tool)
 
 | Tool | Descrizione |
 |------|-------------|
@@ -20,13 +20,15 @@ Permette di gestire fatture elettroniche italiane tramite conversazione naturale
 | `get_invoice` | Dettaglio completo fattura |
 | `list_clients` | Lista clienti con filtro |
 | `get_company_info` | Info azienda collegata |
-| `create_invoice` | Crea nuova fattura (bozza) |
-| `duplicate_invoice` | Duplica fattura esistente |
+| `create_invoice` | Crea nuova fattura (bozza) con codice SDI automatico |
+| `duplicate_invoice` | Duplica fattura esistente con codice SDI aggiornato |
+| `delete_invoice` | Elimina fattura bozza (non inviata) |
 | `send_to_sdi` | Invia fattura allo SDI |
 | `get_invoice_status` | Stato fattura elettronica |
 | `send_email` | Invia copia cortesia via email |
 | `list_received_documents` | Fatture passive (fornitori) |
 | `get_situation` | Dashboard: fatturato, incassato, costi |
+| `check_numeration` | 🆕 Verifica continuità numerica fatture |
 
 ### 🚀 Installazione
 
@@ -106,6 +108,7 @@ Chiudi completamente Claude Desktop (Cmd+Q su Mac) e riaprilo.
 "Invia la fattura 326 allo SDI"
 "Manda la copia cortesia via email"
 "Quali fatture devo ancora incassare?"
+"Verifica la numerazione delle fatture 2025"
 ```
 
 ### ⚠️ Note di sicurezza
@@ -113,7 +116,12 @@ Chiudi completamente Claude Desktop (Cmd+Q su Mac) e riaprilo.
 - Le operazioni di scrittura (create, send_to_sdi) richiedono **sempre conferma**
 - L'invio allo SDI è **irreversibile**
 - Le fatture vengono create come **bozze** (draft)
+- Il codice univoco SDI viene recuperato **automaticamente** dall'anagrafica cliente
 - Il metodo di pagamento di default è **MP05** (bonifico)
+
+### 📋 Changelog
+
+Vedi [CHANGELOG.md](CHANGELOG.md)
 
 ### 📄 Licenza
 
@@ -131,7 +139,7 @@ MCP (Model Context Protocol) Server to integrate **Fatture in Cloud** with Claud
 
 Manage Italian electronic invoices through natural conversation.
 
-### ✨ Features
+### ✨ Features (13 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -139,13 +147,15 @@ Manage Italian electronic invoices through natural conversation.
 | `get_invoice` | Full invoice details |
 | `list_clients` | List clients with filter |
 | `get_company_info` | Connected company info |
-| `create_invoice` | Create new invoice (draft) |
-| `duplicate_invoice` | Duplicate existing invoice |
+| `create_invoice` | Create new invoice (draft) with automatic SDI code |
+| `duplicate_invoice` | Duplicate existing invoice with updated SDI code |
+| `delete_invoice` | Delete draft invoice (not yet sent) |
 | `send_to_sdi` | Send invoice to SDI (Italian e-invoice system) |
 | `get_invoice_status` | E-invoice status |
 | `send_email` | Send courtesy copy via email |
 | `list_received_documents` | Received invoices (suppliers) |
 | `get_situation` | Dashboard: revenue, collected, costs |
+| `check_numeration` | 🆕 Verify invoice numbering continuity |
 
 ### 🚀 Installation
 
@@ -225,6 +235,7 @@ Fully quit Claude Desktop (Cmd+Q on Mac) and reopen it.
 "Send invoice 326 to SDI"
 "Send the courtesy copy via email"
 "Which invoices are still pending payment?"
+"Check invoice numbering for 2025"
 ```
 
 ### ⚠️ Security notes
@@ -232,7 +243,12 @@ Fully quit Claude Desktop (Cmd+Q on Mac) and reopen it.
 - Write operations (create, send_to_sdi) **always require confirmation**
 - Sending to SDI is **irreversible**
 - Invoices are created as **drafts**
+- SDI unique code is **automatically retrieved** from client registry
 - Default payment method is **MP05** (bank transfer)
+
+### 📋 Changelog
+
+See [CHANGELOG.md](CHANGELOG.md)
 
 ### 📄 License
 
