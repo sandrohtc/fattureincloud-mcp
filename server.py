@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Fatture in Cloud MCP Server - v1.3
+"""Fatture in Cloud MCP Server - v1.4
 
 MCP Server per integrare Fatture in Cloud con Claude AI.
 Permette di gestire fatture elettroniche italiane tramite conversazione.
+
+Changelog v1.4:
+- NEW: tool get_payment_methods per ottenere i metodi di pagamento disponibili
+- NEW: tool add_payment_to_invoice per aggiungere un pagamento a una fattura esistente
 
 Changelog v1.3:
 - FIX: create_invoice ora include ei_code (codice univoco SDI) dall'anagrafica cliente
@@ -25,6 +29,8 @@ from fattureincloud_python_sdk.api.issued_e_invoices_api import IssuedEInvoicesA
 from fattureincloud_python_sdk.api.received_documents_api import ReceivedDocumentsApi
 from fattureincloud_python_sdk.api.clients_api import ClientsApi
 from fattureincloud_python_sdk.api.companies_api import CompaniesApi
+from fattureincloud_python_sdk.api.settings_api import SettingsApi
+from fattureincloud_python_sdk.api.cashbook_api import CashbookApi
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -44,6 +50,8 @@ einvoice_api = IssuedEInvoicesApi(api_client)
 received_api = ReceivedDocumentsApi(api_client)
 clients_api = ClientsApi(api_client)
 companies_api = CompaniesApi(api_client)
+settings_api = SettingsApi(api_client)
+cashbook_api = CashbookApi(api_client)
 
 app = Server("fattureincloud")
 
@@ -120,6 +128,147 @@ def build_entity_from_client(client_id, client_data=None):
         entity["certified_email"] = pec
 
     return entity
+
+
+def get_payment_methods():
+    """Recupera i metodi di pagamento disponibili"""
+    try:
+        response = settings_api.list_payment_methods(company_id=COMPANY_ID)
+        methods = []
+        for method in (response.data or []):
+            method_data = method.to_dict()
+            methods.append({
+                "id": method_data.get("id"),
+                "name": method_data.get("name"),
+                "type": method_data.get("type")
+            })
+        return methods
+    except Exception as e:
+        print(f"Error getting payment methods: {str(e)}")
+        return []
+
+
+def add_payment_to_invoice(document_id, amount, payment_date, payment_method_id):
+    """Aggiunge un pagamento a una fattura esistente"""
+    try:
+        # Ottieni i dettagli della fattura
+        response = issued_api.get_issued_document(
+            company_id=COMPANY_ID,
+            document_id=document_id,
+            fieldset="detailed"
+        )
+        invoice_data = response.data.to_dict()
+
+        # Recupera il metodo di pagamento
+        payment_method_response = settings_api.get_payment_method(
+            company_id=COMPANY_ID,
+            payment_method_id=payment_method_id
+        )
+        payment_method = payment_method_response.data.to_dict()
+
+        # Recupera il conto di pagamento associato al metodo
+        payment_account_id = payment_method.get("default_payment_account")
+
+        # Aggiorna la fattura aggiungendo il pagamento
+        payments_list = invoice_data.get("payments_list", [])
+        
+        # Cerchiamo il pagamento principale per aggiornarlo
+        updated_payments = []
+        found_main_payment = False
+        
+        for payment in payments_list:
+            payment_dict = payment.to_dict() if hasattr(payment, 'to_dict') else payment
+            
+            # Controlliamo se è il pagamento principale (quello con lo stesso importo della fattura)
+            if not found_main_payment:
+                # Calcoliamo l'importo totale della fattura
+                total_amount = get_total_from_doc(invoice_data)
+                
+                # Se il pagamento corrisponde all'importo totale, è quello da modificare
+                if abs(payment_dict.get('amount', 0) - total_amount) < 0.01:
+                    # Modifichiamo questo pagamento per registrare il pagamento parziale
+                    updated_payment = {
+                        "id": payment_dict.get("id"),
+                        "amount": payment_dict.get("amount"),
+                        "due_date": payment_dict.get("due_date"),
+                        "paid_date": payment_date,
+                        "status": "IssuedDocumentStatus.paid" if abs(amount - total_amount) < 0.01 else "IssuedDocumentStatus.not_paid",  # rimane non pagato se non è il totale
+                        "payment_terms": payment_dict.get("payment_terms", {}),
+                        "payment_account_id": payment_account_id
+                    }
+                    
+                    # Creiamo un nuovo pagamento per la differenza se non è il pagamento completo
+                    if abs(amount - total_amount) > 0.01 and amount < total_amount:
+                        remaining_amount = total_amount - amount
+                        
+                        # Trova una data di scadenza futura o quella originale
+                        original_due_date = payment_dict.get("due_date")
+                        
+                        new_payment = {
+                            "amount": remaining_amount,
+                            "due_date": original_due_date,
+                            "status": "IssuedDocumentStatus.not_paid",
+                            "payment_terms": payment_dict.get("payment_terms", {}),
+                            "payment_account_id": payment_account_id
+                        }
+                        
+                        updated_payments.append(updated_payment)
+                        updated_payments.append(new_payment)
+                    else:
+                        # Se è un pagamento completo o superiore, impostiamo come pagato
+                        paid_payment = {
+                            "id": payment_dict.get("id"),
+                            "amount": amount,
+                            "due_date": payment_dict.get("due_date"),
+                            "paid_date": payment_date,
+                            "status": "IssuedDocumentStatus.paid",
+                            "payment_terms": payment_dict.get("payment_terms", {}),
+                            "payment_account_id": payment_account_id
+                        }
+                        updated_payments.append(paid_payment)
+                    
+                    found_main_payment = True
+                else:
+                    # Aggiungiamo altri eventuali pagamenti invariati
+                    updated_payments.append(payment_dict)
+            else:
+                # Aggiungiamo altri eventuali pagamenti invariati
+                updated_payments.append(payment_dict)
+        
+        # Se non abbiamo trovato il pagamento principale, aggiungiamone uno nuovo
+        if not found_main_payment:
+            # Calcoliamo l'importo totale della fattura
+            total_amount = get_total_from_doc(invoice_data)
+            
+            # Se il pagamento è completo, impostiamo come pagato, altrimenti come parziale
+            status = "IssuedDocumentStatus.paid" if abs(amount - total_amount) < 0.01 else "IssuedDocumentStatus.not_paid"
+            
+            new_payment = {
+                "amount": amount,
+                "due_date": str(datetime.now().date()),  # Usiamo la data odierna come scadenza se non è specificata
+                "paid_date": payment_date,
+                "status": status,
+                "payment_terms": {"days": 0, "type": "standard"},
+                "payment_account_id": payment_account_id
+            }
+            updated_payments.append(new_payment)
+
+        # Aggiorniamo la fattura con i nuovi pagamenti
+        update_data = {
+            "data": {
+                "payments_list": updated_payments
+            }
+        }
+
+        response = issued_api.modify_issued_document(
+            company_id=COMPANY_ID,
+            document_id=document_id,
+            modify_issued_document_request=update_data
+        )
+
+        return {"success": True, "message": f"Pagamento di €{amount} aggiunto alla fattura {document_id}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.list_tools()
@@ -294,6 +443,25 @@ async def list_tools():
                     "year": {"type": "integer", "description": "Anno da verificare (es. 2025)"}
                 },
                 "required": ["year"]
+            }
+        ),
+        Tool(
+            name="get_payment_methods",
+            description="Ottiene i metodi di pagamento disponibili per l'azienda",
+            inputSchema={"type": "object", "properties": {}}
+        ),
+        Tool(
+            name="add_payment_to_invoice",
+            description="Aggiunge un pagamento a una fattura esistente. Parametri: document_id (ID fattura), amount (importo), payment_date (data pagamento AAAA-MM-GG), payment_method_id (ID metodo di pagamento)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "integer", "description": "ID fattura"},
+                    "amount": {"type": "number", "description": "Importo del pagamento"},
+                    "payment_date": {"type": "string", "description": "Data del pagamento (AAAA-MM-GG)"},
+                    "payment_method_id": {"type": "integer", "description": "ID del metodo di pagamento"}
+                },
+                "required": ["document_id", "amount", "payment_date", "payment_method_id"]
             }
         ),
     ]
@@ -911,6 +1079,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "status": "✓ Numerazione continua" if len(gaps) == 0 else f"⚠ Trovati {len(gaps)} problemi",
                 "gaps": gaps if gaps else []
             }
+            return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+            
+        elif name == "get_payment_methods":
+            methods = get_payment_methods()
+            return [TextContent(type="text", text=json.dumps(methods, indent=2, ensure_ascii=False))]
+            
+        elif name == "add_payment_to_invoice":
+            document_id = arguments["document_id"]
+            amount = arguments["amount"]
+            payment_date = arguments["payment_date"]
+            payment_method_id = arguments["payment_method_id"]
+            
+            result = add_payment_to_invoice(document_id, amount, payment_date, payment_method_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
             
         else:
