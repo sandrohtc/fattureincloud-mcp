@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.0] - 2026-02-14
+
+### Added
+- `get_payment_methods` - nuovo tool per ottenere i metodi di pagamento disponibili
+- `add_payment_to_invoice` - nuovo tool per aggiungere un pagamento a una fattura esistente
+- Funzioni ausiliarie `get_payment_methods()` e `add_payment_to_invoice()` per gestione pagamenti
+- Supporto API Cashbook e Settings per gestione pagamenti
+
+### Tool totali: 15
+
+---
+
 ## [1.3.0] - 2026-02-13
 
 ### Fixed

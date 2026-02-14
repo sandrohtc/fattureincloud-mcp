@@ -12,7 +12,7 @@ Server MCP (Model Context Protocol) per integrare **Fatture in Cloud** con Claud
 
 Permette di gestire fatture elettroniche italiane tramite conversazione naturale.
 
-### ✨ Funzionalità (13 tool)
+### ✨ Funzionalità (15 tool)
 
 | Tool | Descrizione |
 |------|-------------|
@@ -29,6 +29,8 @@ Permette di gestire fatture elettroniche italiane tramite conversazione naturale
 | `list_received_documents` | Fatture passive (fornitori) |
 | `get_situation` | Dashboard: fatturato, incassato, costi |
 | `check_numeration` | 🆕 Verifica continuità numerica fatture |
+| `get_payment_methods` | 🆕 Ottiene i metodi di pagamento disponibili |
+| `add_payment_to_invoice` | 🆕 Aggiunge un pagamento a una fattura esistente |
 
 ### 🚀 Installazione
 
@@ -139,7 +141,7 @@ MCP (Model Context Protocol) Server to integrate **Fatture in Cloud** with Claud
 
 Manage Italian electronic invoices through natural conversation.
 
-### ✨ Features (13 tools)
+### ✨ Features (15 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -156,6 +158,8 @@ Manage Italian electronic invoices through natural conversation.
 | `list_received_documents` | Received invoices (suppliers) |
 | `get_situation` | Dashboard: revenue, collected, costs |
 | `check_numeration` | 🆕 Verify invoice numbering continuity |
+| `get_payment_methods` | 🆕 Get available payment methods |
+| `add_payment_to_invoice` | 🆕 Add a payment to an existing invoice |
 
 ### 🚀 Installation
 
